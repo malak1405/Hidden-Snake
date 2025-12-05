@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Hidden Snake — Terminal Tetris</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{--neon:#00ff66;--bg:#000;--panel:#111}
+
+  html,body{
+    height:100%;
+    margin:0;
+    background:#000;
+    font-family:"IBM Plex Mono",Consolas,monospace;
+    color:#00ff66;
+    overflow:hidden;
+  }
+
+  /* effet CRT / scanlines */
+  body::before{
+    content:"";
+    position:fixed;
+    inset:0;
+    pointer-events:none;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(0,255,80,0.08) 0,
+        rgba(0,255,80,0.08) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+    mix-blend-mode:screen;
+    opacity:0.45;
+  }
+
+  /* Conteneur du jeu (Tetris layout) */
+  #gameWrapper{
+    position:fixed;
+    left:50%;
+    top:50%;
+    transform:translate(-50%,-50%);
+    width:520px;               /* 400 jeu + 110 panel + bordures */
+    height:420px;
+    display:none;
+    z-index:1000;
+  }
+
+  /* Zone de jeu style Tetris */
+  #gameCanvas{
+    position:absolute;
+    left:0; top:0;
+    width:400px; height:400px;
+    border:8px solid #444;
+    box-shadow:0 0 0 2px #777;
+    background:
+      radial-gradient(circle at center, #222 0, #000 65%),
+      repeating-linear-gradient(0deg, #111 0, #111 2px, #000 2px, #000 4px),
+      repeating-linear-gradient(90deg, #111 0, #111 2px, #000 2px, #000 4px);
+    image-rendering:pixelated;
+  }
+
+  /* Panneau droit HUD */
+  #sidePanel{
+    position:absolute;
+    right:0; top:0;
+    width:110px;
+    height:400px;
+    background:#050505;
+    border:8px solid #444;
+    box-shadow:0 0 0 2px #777;
+    color:#fff;
+    font-family:monospace;
+    font-size:11px;
+    padding:8px 6px;
+    box-sizing:border-box;
+  }
+
+  #sidePanel h1{
+    font-size:11px;
+    letter-spacing:2px;
+    margin:0 0 6px;
+    text-align:center;
+    color:#ccc;
+  }
+
+  #nextBox{
+    width:80px;
+    height:40px;
+    border:1px solid #555;
+    margin:4px auto 12px;
+    background:#000;
+  }
+
+  .side-label{
+    color:#888;
+    margin-top:4px;
+  }
+  .side-value{
+    color:#3cf;
+    margin-bottom:4px;
+  }
+
+  #sideButtons{
+    position:absolute;
+    bottom:10px;
+    left:6px;
+    right:6px;
+    text-align:center;
+  }
+  #sideButtons button{
+    display:block;
+    width:100%;
+    margin:3px 0;
+    background:var(--neon);
+    border:none;
+    padding:5px 0;
+    font-weight:700;
+    cursor:pointer;
+    font-size:10px;
+  }
+  #closeBtn{background:#ff4d6d;}
+
+  /* Hint d’activation style terminal */
+  #activationHint{
+    position:fixed;
+    left:12px; bottom:12px;
+    font-size:14px;
+    padding:10px 14px;
+    border-radius:4px;
+    border:1px solid rgba(0,255,80,0.4);
+    background:rgba(0,15,0,0.85);
+    color:#00ff80;
+    box-shadow:0 0 12px rgba(0,255,80,0.25);
+    text-shadow:0 0 4px rgba(0,255,80,0.8);
+    letter-spacing:0.06em;
+    opacity:1;
+    transition:opacity .25s;
+    z-index:1100;
+  }
+
+  #activationHint .cursor{
+    display:inline-block;
+    width:8px;
+    height:14px;
+    margin-left:4px;
+    background:#00ff80;
+    box-shadow:0 0 6px rgba(0,255,80,0.9);
+    animation:blink 1s steps(1,end) infinite;
+  }
+
+  @keyframes blink{
+    0%,50%{ opacity:1; }
+    50.01%,100%{ opacity:0; }
+  }
+</style>
+</head>
+<body>
+
+<div id="gameWrapper">
+  <canvas id="gameCanvas" width="400" height="400" aria-label="Snake game"></canvas>
+
+  <aside id="sidePanel" aria-hidden="true">
+    <h1>NCODED</h1>
+
+    <div class="side-label">NEXT</div>
+    <div id="nextBox"></div>
+
+    <div class="side-label">SCORE</div>
+    <div id="sideScore" class="side-value">0</div>
+
+    <div class="side-label">TIME</div>
+    <div id="sideTime" class="side-value">0:00</div>
+
+    <div class="side-label">LINES</div>
+    <div id="sideLines" class="side-value">0</div>
+
+    <div id="sideButtons">
+      <button id="pauseBtn">PAUSE</button>
+      <button id="resumeBtn" style="display:none;">RESUME</button>
+      <button id="restartBtn" style="display:none;">RESTART</button>
+      <button id="closeBtn">CLOSE</button>
+    </div>
+  </aside>
+</div>
+
+<div id="activationHint">
+  BOOTING HIDDEN MODULE...<br>
+  TYPE <strong>S N A K E</strong> TO CONTINUE<span class="cursor"></span>
+</div>
+
+<script>
+(() => {
+  // ---- Config ----
+  const wrapper       = document.getElementById('gameWrapper');
+  const canvas        = document.getElementById('gameCanvas');
+  const ctx           = canvas.getContext('2d', { alpha: false });
+  const activationHint= document.getElementById('activationHint');
+
+  const sideScore     = document.getElementById('sideScore');
+  const sideTime      = document.getElementById('sideTime');
+  const sideLines     = document.getElementById('sideLines');
+  const pauseBtn      = document.getElementById('pauseBtn');
+  const resumeBtn     = document.getElementById('resumeBtn');
+  const restartBtn    = document.getElementById('restartBtn');
+  const closeBtn      = document.getElementById('closeBtn');
+
+  const CELL = 20;
+  const COLS = canvas.width / CELL;
+  const ROWS = canvas.height / CELL;
+
+  // ---- état ----
+  let snake = [];
+  let direction = { x: 1, y: 0 };
+  let nextDirection = { x: 1, y: 0 };
+  let food = { x: 0, y: 0 };
+  let score = 0;
+  let lines = 0;
+  let gameRunning = false;
+  let loopHandle = null;
+  let activated = false;
+  let startTime = 0;
+
+  // ---- séquence secrète ----
+  let seq = '';
+  const SECRET = 'SNAKE';
+
+  canvas.tabIndex = 0;
+
+  function clampWrapX(x){ return ((x % COLS) + COLS) % COLS; }
+  function clampWrapY(y){ return ((y % ROWS) + ROWS) % ROWS; }
+
+  // ---- activation + contrôles ----
+  document.addEventListener('keydown', (ev) => {
+    // séquence lettres uniquement
+    if (ev.key.length === 1 && /[a-zA-Z]/.test(ev.key)) {
+      seq += ev.key.toUpperCase();
+      if (seq.endsWith(SECRET) && !activated) {
+        activated = true;
+        showGame();
+      }
+      if (seq.length > SECRET.length) seq = seq.slice(-SECRET.length);
+    }
+
+    if (!activated) return;
+
+    const k = ev.key;
+    if (['ArrowLeft','ArrowUp','ArrowRight','ArrowDown',' '].includes(k)) {
+      ev.preventDefault();
+    }
+
+    // Toujours mémoriser la prochaine direction (même en pause)
+    if (k === 'ArrowLeft'  && direction.x !== 1)  nextDirection = {x:-1,y:0};
+    if (k === 'ArrowUp'    && direction.y !== 1)  nextDirection = {x:0,y:-1};
+    if (k === 'ArrowRight' && direction.x !== -1) nextDirection = {x:1,y:0};
+    if (k === 'ArrowDown'  && direction.y !== -1) nextDirection = {x:0,y:1};
+    if (k === ' ') togglePause();
+  });
+
+  pauseBtn.addEventListener('click', () => togglePause(true));
+  resumeBtn.addEventListener('click', () => togglePause(false));
+  restartBtn.addEventListener('click', restartGame);
+  closeBtn.addEventListener('click', closeGame);
+
+  function showGame(){
+    wrapper.style.display = 'block';
+    activationHint.style.opacity = '0';
+    activationHint.innerHTML = 'HIDDEN MODULE LOADED.<br>USE ARROW KEYS TO CONTROL SNAKE<span class="cursor"></span>';
+    activationHint.style.opacity = '1';
+    setTimeout(()=> activationHint.style.opacity = '0', 2000);
+
+    startGame();
+    setTimeout(()=> canvas.focus(), 200);
+  }
+
+  function startGame(){
+    snake = [
+      {x: Math.floor(COLS/2),   y: Math.floor(ROWS/2)},
+      {x: Math.floor(COLS/2)-1, y: Math.floor(ROWS/2)},
+      {x: Math.floor(COLS/2)-2, y: Math.floor(ROWS/2)}
+    ];
+    direction = {x:1,y:0};
+    nextDirection = {x:1,y:0};
+    score = 0;
+    lines = 0;
+    sideLines.textContent = '0';
+    spawnFood();
+    startTime = Date.now();
+    updateScore();
+    gameRunning = true;
+    clearInterval(loopHandle);
+    loopHandle = setInterval(gameTick, 120);
+    pauseBtn.style.display = 'block';
+    resumeBtn.style.display = 'none';
+    restartBtn.style.display = 'none';
+  }
+
+  function spawnFood(){
+    do {
+      food.x = Math.floor(Math.random() * COLS);
+      food.y = Math.floor(Math.random() * ROWS);
+    } while (snake.some(s => s.x === food.x && s.y === food.y));
+  }
+
+  function gameTick(){
+    if (!gameRunning) return;
+    direction = nextDirection;
+    const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
+
+    head.x = clampWrapX(head.x);
+    head.y = clampWrapY(head.y);
+
+    if (snake.some((seg, idx) => idx>0 && seg.x === head.x && seg.y === head.y)) {
+      onGameOver();
+      return;
+    }
+
+    snake.unshift(head);
+
+    if (head.x === food.x && head.y === food.y) {
+      score += 10;
+      if (score % 50 === 0) lines++;
+      spawnFood();
+      updateScore();
+    } else {
+      snake.pop();
+    }
+
+    render();
+  }
+
+  function render(){
+    ctx.fillStyle = '#060606';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    ctx.lineWidth = 0.5;
+    for (let x=0; x<=canvas.width; x+=CELL){
+      ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+    }
+    for (let y=0; y<=canvas.height; y+=CELL){
+      ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
+    }
+
+    for (let i=0;i<snake.length;i++){
+      const seg = snake[i];
+      const light = 60 + Math.min(30, i);
+      const hue = 140 - i*2;
+      ctx.fillStyle = `hsl(${hue} 100% ${light}%)`;
+      ctx.shadowColor = 'rgba(0,255,150,0.9)';
+      ctx.shadowBlur = 10 - Math.min(8, Math.floor(i/3));
+      ctx.fillRect(seg.x * CELL + 1, seg.y * CELL + 1, CELL - 2, CELL - 2);
+    }
+    ctx.shadowBlur = 0;
+
+    const pulse = 2 + Math.abs(Math.sin(Date.now()/200))*2;
+    ctx.beginPath();
+    ctx.fillStyle = '#ff2f66';
+    ctx.shadowColor = 'rgba(255,0,150,0.9)';
+    ctx.shadowBlur = 20;
+    ctx.arc(
+      food.x*CELL + CELL/2,
+      food.y*CELL + CELL/2,
+      (CELL/2)-3 + pulse/2,
+      0, Math.PI*2
+    );
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  function updateScore(){
+    sideScore.textContent = score;
+    sideLines.textContent = lines;
+    const diff = Math.floor((Date.now() - startTime)/1000);
+    const m = String(Math.floor(diff/60));
+    const s = String(diff%60).padStart(2,'0');
+    sideTime.textContent = `${m}:${s}`;
+  }
+
+  // Game over style terminal
+  function onGameOver(){
+    gameRunning = false;
+    clearInterval(loopHandle);
+
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    ctx.strokeStyle = "#00ff66";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(20,80,canvas.width-40,canvas.height-160);
+
+    ctx.fillStyle = "#00ff66";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.font = "16px 'IBM Plex Mono', Consolas, monospace";
+
+    const x = 40;
+    let y = 100;
+    const lineH = 24;
+
+    ctx.fillText("> SYSTEM FAILURE", x, y); y += lineH;
+    ctx.fillText("> SCORE: " + score, x, y); y += lineH;
+    ctx.fillText("> LINES: " + lines, x, y); y += lineH;
+    ctx.fillText("> PRESS R TO REBOOT", x, y); y += lineH;
+    ctx.fillText("> PRESS ESC TO EXIT", x, y);
+
+    pauseBtn.style.display = "none";
+    resumeBtn.style.display = "none";
+    restartBtn.style.display = "block";
+
+    const keyHandler = (e) => {
+      if(e.key === "r" || e.key === "R"){
+        document.removeEventListener("keydown", keyHandler);
+        restartGame();
+      }
+      if(e.key === "Escape"){
+        document.removeEventListener("keydown", keyHandler);
+        closeGame();
+      }
+    };
+    document.addEventListener("keydown", keyHandler);
+  }
+
+  function togglePause(forcePause){
+    if (!activated) return;
+
+    if (typeof forcePause === 'boolean') {
+      if (forcePause) {
+        gameRunning = false;
+        clearInterval(loopHandle);
+        pauseBtn.style.display = 'none';
+        resumeBtn.style.display = 'block';
+      } else {
+        if (!gameRunning) {
+          gameRunning = true;
+          loopHandle = setInterval(gameTick, 120);
+          pauseBtn.style.display='block';
+          resumeBtn.style.display='none';
+        }
+      }
+      return;
+    }
+
+    if (gameRunning) {
+      gameRunning = false;
+      clearInterval(loopHandle);
+      pauseBtn.style.display = 'none';
+      resumeBtn.style.display = 'block';
+    } else {
+      gameRunning = true;
+      loopHandle = setInterval(gameTick, 120);
+      pauseBtn.style.display = 'block';
+      resumeBtn.style.display = 'none';
+    }
+  }
+
+  function restartGame(){
+    startGame();
+  }
+
+  function closeGame(){
+    activated = false;
+    gameRunning = false;
+    clearInterval(loopHandle);
+    wrapper.style.display = 'none';
+    restartBtn.style.display = 'none';
+    resumeBtn.style.display = 'none';
+    pauseBtn.style.display = 'block';
+    activationHint.style.opacity = '1';
+    activationHint.innerHTML =
+      'BOOTING HIDDEN MODULE...<br>TYPE <strong>S N A K E</strong> TO CONTINUE<span class="cursor"></span>';
+    seq = '';
+  }
+
+  // Empêcher le scroll quand le jeu est actif
+  window.addEventListener('keydown', (e) => {
+    if (activated && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+      e.preventDefault();
+    }
+  }, { passive:false });
+
+})();
+</script>
+</body>
+</html>
